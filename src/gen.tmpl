@@ -1,0 +1,147 @@
+package mdb
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"log"
+	"sync"
+{{if .HasTime}}	"time"{{end}}
+)
+
+type Mem{{.Table}} struct {
+{{range .Columns}}
+    {{.Name}} {{.Typ}}{{end}}
+}
+
+type Mem{{.Table}}Store struct {
+    sync.RWMutex
+    db *sql.DB
+    store []*Mem{{.RawTable | pascal}}
+    deleted []bool
+{{range .UniqueIndexes}}
+    {{.RawName | camel}}Index *{{.Typ | pascal}}UniqueIndex{{end}}
+    executor *AsyncQueryExecutor
+}
+
+func NewMem{{.Table}}Store(db *sql.DB) *Mem{{.Table}}Store {
+	initialSize := {{.InitialSize}}
+	store := make([]*Mem{{.Table}}, 0, initialSize)
+	deleted := make([]bool, 0, initialSize)
+
+	// id = 0 is unavailable
+	store = append(store, nil)
+    deleted = append(deleted, true)
+
+	rows, err := db.Query("SELECT * FROM {{.RawTable}}")
+	if err != nil {
+		log.Fatal(err)
+	}
+{{range .UniqueIndexes}}
+    {{.RawName | camel}}Index := New{{.Typ | pascal}}UniqueIndex()
+{{end}}
+    for rows.Next() {
+        e := Mem{{.Table}}{}
+        err := rows.Scan({{range $i, $e := .Columns}}{{if $i}}, {{end}}&e.{{$e.Name}}{{end}})
+		if err != nil {
+			log.Fatal(err)
+		}
+		for e.Id >= len(store) {
+			store = append(store, nil)
+			deleted = append(deleted, true)
+		}
+{{range .UniqueIndexes}}
+    	{{.RawName | camel}}Index.Insert(e.{{.Name}}, e.Id){{end}}
+    }
+
+    rows.Close()
+
+	return &Mem{{.Table}}Store {
+        RWMutex: sync.RWMutex{},
+        db: db,
+        store: store,
+        deleted: deleted,
+        executor: NewAsyncQueryExecutor(db),
+{{range .UniqueIndexes}}
+        {{.RawName | camel}}Index: {{.RawName | camel}}Index,{{end}}
+    }
+}
+
+func (s *Mem{{.Table}}Store) Insert(e *Mem{{.Table}}) (int, error) {
+    s.Lock()
+    defer s.Unlock()
+{{range .UniqueIndexes}}
+    if _, found := s.{{.RawName | camel}}Index.Find(e.{{.Name}}); found {
+    	return 0, errors.New("failed to insert: Same {{.Name}} found")
+    }{{end}}
+
+    ne := *e;
+    ne.Id = len(s.store)
+    s.store = append(s.store, &ne)
+    s.deleted = append(s.deleted, false)
+{{range .UniqueIndexes}}
+    if err := s.{{.RawName | camel}}Index.Insert(ne.{{.Name}}, ne.Id); err != nil {
+        log.Fatal(err)
+    }{{end}}
+
+    s.executor.AddQuery("INSERT INTO {{.RawTable}} VALUES({{range $i, $e := .Columns}}{{if $i}},{{end}}?{{end}})",
+        []interface{}{ {{range $i, $e := .Columns}}{{if $i}}, {{end}}ne.{{$e.Name}}{{end}} })
+
+    return ne.Id, nil
+}
+
+func (s *Mem{{.Table}}Store) Delete(id int) error {
+    s.Lock()
+    defer s.Unlock()
+
+    if id <= 0 {
+    	return fmt.Errorf("id should be positive : %d", id)
+	}
+    if id >= len(s.store) {
+		return fmt.Errorf("id is larger than store size : %d > %d", id, len(s.store))
+	}
+    if s.deleted[id] {
+		return fmt.Errorf("id(%d) is already deleted", id)
+	}
+
+    s.deleted[id] = true
+
+    s.executor.AddQuery("DELETE FROM {{.Table}} WHERE id = ?", []interface{}{ id })
+    return nil
+}
+
+func (s *Mem{{.Table}}Store) SelectFromId(id int) (*Mem{{.Table}}, error) {
+    s.RLock()
+    defer s.RUnlock()
+
+    if id <= 0 {
+    	return nil, fmt.Errorf("id should be positive : %d", id)
+	}
+    if id >= len(s.store) {
+		return nil, fmt.Errorf("id is larger than store size : %d > %d", id, len(s.store))
+	}
+    if s.deleted[id] {
+		return nil, fmt.Errorf("id(%d) is deleted", id)
+	}
+
+	ret := *s.store[id]
+	return &ret, nil
+}
+{{range $_, $e := .UniqueIndexes}}
+func (s *Mem{{$.Table}}Store) SelectFrom{{$e.RawName | pascal}}({{$e.Name}} {{$e.Typ}}) (*Mem{{$.Table}}, error) {
+    s.RLock()
+    defer s.RUnlock()
+
+    id, found := s.{{$e.RawName | camel}}Index.Find({{$e.Name}})
+    if !found {
+        return nil, fmt.Errorf("{{$e.Name}}(%s) is not found", {{$e.Name}})
+    }
+
+    if id <= 0 || id >= len(s.store) || s.deleted[id] {
+		log.Fatal("internal error. id is invalid. SelectFrom{{$e.RawName | pascal}}")
+	}
+
+	ret := *s.store[id]
+	return &ret, nil
+}
+{{end}}
