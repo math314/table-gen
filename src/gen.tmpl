@@ -50,6 +50,8 @@ func NewMem{{.Table}}Store(db *sql.DB) *Mem{{.Table}}Store {
 			store = append(store, nil)
 			deleted = append(deleted, true)
 		}
+		store[e.Id] = &e
+		deleted[e.Id] = false
 {{range .UniqueIndexes}}
     	{{.RawName | camel}}Index.Insert(e.{{.Name}}, e.Id){{end}}
     }
@@ -85,7 +87,7 @@ func (s *Mem{{.Table}}Store) Insert(e *Mem{{.Table}}) (int, error) {
     }{{end}}
 
     s.executor.AddQuery("INSERT INTO {{.RawTable}} VALUES({{range $i, $e := .Columns}}{{if $i}},{{end}}?{{end}})",
-        []interface{}{ {{range $i, $e := .Columns}}{{if $i}}, {{end}}ne.{{$e.Name}}{{end}} })
+         {{range $i, $e := .Columns}}{{if $i}}, {{end}}ne.{{$e.Name}}{{end}})
 
     return ne.Id, nil
 }

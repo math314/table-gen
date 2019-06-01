@@ -141,74 +141,6 @@ func uniqueIndexes(ts *sqlparser.TableSpec) []nameType {
 	return nameTypeList
 }
 
-func (ct *CreateTable) GenerateNewStore() string {
-	tmpl, err := template.New("test").Funcs(template.FuncMap{
-		"pascal": ToPascalFromSnake,
-		"camel":  ToCamelFromSnake,
-	}).Parse(`
-func NewMem{{.Table}}Store (db *sql.DB) *Mem{{.Table}}Store {
-	initialSize := {{.InitialSize}}
-	store := make([]*Mem{{.Table}}, 0, initialSize)
-	deleted := make([]bool, 0, initialSize)
-
-	// id = 0 is unavailable
-	store = append(store, nil)
-    deleted = append(deleted, true)
-
-	rows, err := db.Query("SELECT * FROM {{.RawTable}}")
-	if err != nil {
-		log.Fatal(err)
-	}
-{{range .UniqueIndexes}}
-    {{.RawName | camel}}Index := New{{.Typ | pascal}}UniqueIndex()
-{{end}}
-    for rows.Next() {
-        e := Mem{{.Table}}{}
-        err := rows.Scan({{range $i, $e := .Columns}}{{if $i}}, {{end}}&e.{{$e.Name}}{{end}})
-		if err != nil {
-			log.Fatal(err)
-		}
-		for e.Id >= len(store) {
-			store = append(store, nil)
-			deleted = append(deleted, true)
-		}
-{{range .UniqueIndexes}}
-    	{{.RawName | camel}}Index.Insert(e.{{.Name}}, e.Id){{end}}
-    }
-
-    rows.Close()
-    
-	return &Mem{{.Table}}Store {
-        RWMutex: sync.RWMutex{},
-        db: db,
-        store: store,
-        deleted: deleted,
-        executor: NewAsyncQueryExecutor(db),
-{{range .UniqueIndexes}}
-        {{.RawName | camel}}Index: {{.RawName | camel}}Index,{{end}}
-    }
-}
-`)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	data := map[string]interface{}{}
-	data["Table"] = ToPascalFromSnake(ct.ddl.NewName.Name.String())
-	data["RawTable"] = ct.ddl.NewName.Name.String()
-	data["InitialSize"] = int(1e5)
-	data["UniqueIndexes"] = uniqueIndexes(ct.ddl.TableSpec)
-	data["Columns"] = columnTypes(ct.ddl.TableSpec)
-
-	b := bytes.Buffer{}
-	err = tmpl.Execute(&b, data)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return b.String()
-}
-
 func (ct *CreateTable) GenerateGoStructs() string {
 	tmpl, err := template.New("gen.tmpl").Funcs(template.FuncMap{
 		"pascal": ToPascalFromSnake,
@@ -243,19 +175,14 @@ func (ct *CreateTable) GenerateGoStructs() string {
 	return b.String()
 }
 
-//type StarStore struct {
-//	sync.RWMutex
-//	db      *sql.DB
-//	store   []*Star
-//	deleted []bool
-//
-//	keywordIndex *StringIndex
-//
-//	dbOpChan chan <- DBOperatorEntry
-//}
+func main() {
+	//var src, dst string
+	//
+	//flag.StringVar(&src, "src", "", "source file path")
+	//flag.StringVar(&dst, "dst", "", "destination file path")
+	//flag.Parse()
 
-func test() {
-	file, err := os.Open("/home/math/dumps/Dump20190518/isuketch_tokens.sql")
+	file, err := os.Open("/home/math/dumps/Dump20190518/isuketch_strokes.sql")
 	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
@@ -280,19 +207,7 @@ func test() {
 
 		ct := CreateTable{ddl}
 		val := ct.GenerateGoStructs()
-		ioutil.WriteFile("src/mdb/token.go", []byte(val), 0644)
+		ioutil.WriteFile("src/mdb/strokes.go", []byte(val), 0644)
 		print(val)
-
-		//fmt.Printf("table name : %s\n", ddl.NewName.Name.String())
-		//for _, col := range ddl.TableSpec.Columns {
-		//	name := col.Name.String()
-		//	Typ := col.Type.SQLType()
-		//	fmt.Printf("%s %s\n", name, Typ.String())
-		//}
 	}
-}
-
-func main() {
-	test()
-
 }
